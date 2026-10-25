@@ -1,0 +1,35 @@
+# Build output
+/build/
+/dist/
+/src/
+
+# Swift/C/C++ objects
+*.o
+*.lo
+*.la
+*.a
+*.so
+*.d
+
+# Java
+*.class
+*.dex
+*.jar
+
+# Signing keys — never commit
+keystore.jks
+*.jks
+*.keystore
+
+# Python
+__pycache__/
+*.pyc
+
+# Editors
+.idea/
+.vscode/
+*.iml
+
+# OS noise
+.DS_Store
+Thumbs.db

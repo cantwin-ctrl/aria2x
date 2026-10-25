@@ -1,0 +1,84 @@
+aria2x patches for aria2 1.37.0
+
+Apply from the aria2-1.37.0 source root:
+  patch -p1 < 0001-aria2x-limits.patch
+
+--- a/src/OptionHandlerFactory.cc	2023-11-15 16:49:41.000000000 +0700
++++ b/src/OptionHandlerFactory.cc	2026-10-25 11:00:19.248947325 +0700
+@@ -179,7 +179,7 @@
+ #ifdef DEFAULT_DISK_CACHE
+                                                   DEFAULT_DISK_CACHE,
+ #else
+-                                                  "16M",
++                                                  "64M",
+ #endif
+                                                   0));
+     op->addTag(TAG_ADVANCED);
+@@ -432,7 +432,7 @@
+   {
+     OptionHandler* op(new NumberOptionHandler(PREF_MAX_CONCURRENT_DOWNLOADS,
+                                               TEXT_MAX_CONCURRENT_DOWNLOADS,
+-                                              "5", 1, -1, 'j'));
++                                              "10", 1, -1, 'j'));
+     op->addTag(TAG_BASIC);
+     op->setChangeGlobalOption(true);
+     handlers.push_back(op);
+@@ -440,7 +440,7 @@
+   {
+     OptionHandler* op(new NumberOptionHandler(PREF_MAX_CONNECTION_PER_SERVER,
+                                               TEXT_MAX_CONNECTION_PER_SERVER,
+-                                              "1", 1, 16, 'x'));
++                                              "1", 1, 256, 'x'));
+     op->addTag(TAG_BASIC);
+     op->addTag(TAG_FTP);
+     op->addTag(TAG_HTTP);
+@@ -501,7 +501,7 @@
+   }
+   {
+     OptionHandler* op(new UnitNumberOptionHandler(
+-        PREF_MIN_SPLIT_SIZE, TEXT_MIN_SPLIT_SIZE, "20M", 1_m, 1_g, 'k'));
++        PREF_MIN_SPLIT_SIZE, TEXT_MIN_SPLIT_SIZE, "1M", 256_k, 1_g, 'k'));
+     op->addTag(TAG_BASIC);
+     op->addTag(TAG_FTP);
+     op->addTag(TAG_HTTP);
+@@ -834,7 +834,7 @@
+   }
+   {
+     OptionHandler* op(new NumberOptionHandler(
+-        PREF_CONNECT_TIMEOUT, TEXT_CONNECT_TIMEOUT, "60", 1, 600));
++        PREF_CONNECT_TIMEOUT, TEXT_CONNECT_TIMEOUT, "15", 1, 600));
+     op->addTag(TAG_FTP);
+     op->addTag(TAG_HTTP);
+     op->setInitialOption(true);
+@@ -873,7 +873,7 @@
+   }
+   {
+     OptionHandler* op(new NumberOptionHandler(PREF_MAX_TRIES, TEXT_MAX_TRIES,
+-                                              "5", 0, -1, 'm'));
++                                              "10", 0, -1, 'm'));
+     op->addTag(TAG_FTP);
+     op->addTag(TAG_HTTP);
+     op->setInitialOption(true);
+@@ -905,7 +905,7 @@
+   }
+   {
+     OptionHandler* op(new UnitNumberOptionHandler(
+-        PREF_PIECE_LENGTH, TEXT_PIECE_LENGTH, "1M", 1_m, 1_g));
++        PREF_PIECE_LENGTH, TEXT_PIECE_LENGTH, "256K", 256_k, 1_g));
+     op->addTag(TAG_ADVANCED);
+     op->addTag(TAG_FTP);
+     op->addTag(TAG_HTTP);
+--- a/src/Platform.cc	2023-11-15 16:49:41.000000000 +0700
++++ b/src/Platform.cc	2026-10-25 11:40:16.835729584 +0700
+@@ -122,7 +122,10 @@
+   // RC4 is in the legacy provider.
+   legacy_provider_ = OSSL_PROVIDER_load(nullptr, "legacy");
+   if (!legacy_provider_) {
+-    throw DL_ABORT_EX("OSSL_PROVIDER_load 'legacy' failed.");
++    // RC4-only provider. Missing legacy degrades BT MSE to plaintext-capable
++    // ciphers; it must never stop aria2 from starting.
++    std::cerr << "aria2c: warning: OSSL_PROVIDER_load 'legacy' failed; "
++                 "RC4 (BitTorrent MSE) unavailable" << std::endl;
+   }
+ 
+   default_provider_ = OSSL_PROVIDER_load(nullptr, "default");
