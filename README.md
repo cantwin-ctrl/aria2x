@@ -12,6 +12,13 @@ aria2c 1.37.0  ·  OpenSSL 3.5.2  ·  c-ares 1.34.5  ·  zlib 1.3.1
 NDK r27d clang  ·  -O3  ·  arm64-v8a  ·  API 24+
 ```
 
+<p align="center">
+  <img src="docs/main.png" width="205" alt="Download list with live speed and connection count">
+  <img src="docs/settings.png" width="205" alt="Settings">
+  <img src="docs/mods.png" width="205" alt="Modifications">
+  <img src="docs/about.png" width="205" alt="About and licenses">
+</p>
+
 ---
 
 ## Why
