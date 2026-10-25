@@ -1,0 +1,227 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'NOTICE.md'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: r27d
+  API: 24
+
+jobs:
+  # Fast job: build aria2 natively and prove the patches actually change behaviour.
+  verify-limits:
+    name: verify patches (native)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libssl-dev zlib1g-dev python3 curl file
+
+      - name: Fetch aria2
+        run: ./fetch-sources.sh aria2
+
+      - name: Apply patches
+        run: |
+          cd src && tar xf aria2-1.37.0.tar.gz && cd aria2-1.37.0
+          patch -p1 --dry-run < ../../patches/0001-aria2x-limits.patch
+          patch -p1 < ../../patches/0001-aria2x-limits.patch
+
+      - name: Build (native, for behavioural tests only)
+        run: |
+          cd src/aria2-1.37.0
+          ./configure --without-gnutls --without-libnettle --without-libxml2 \
+                      --without-libexpat --without-libssh2 --without-sqlite3 \
+                      --without-libcares --disable-nls > /tmp/conf.log 2>&1
+          make -j"$(nproc)" -C deps/wslay > /tmp/wslay.log 2>&1
+          make -j"$(nproc)" -C src aria2c > /tmp/make.log 2>&1
+          ./src/aria2c --version | head -3
+
+      - name: Assert the limits moved
+        run: |
+          set -u
+          A=src/aria2-1.37.0/src/aria2c
+          fail=0
+
+          check() {  # check <description> <expect: reject|accept> <args...>
+              local desc="$1" expect="$2"; shift 2
+              local out
+              out=$("$A" "$@" --dry-run --max-tries=1 --connect-timeout=1 \
+                     http://127.0.0.1:9/f 2>&1 || true)
+              if echo "$out" | grep -qi "must be between"; then
+                  got=reject
+              else
+                  got=accept
+              fi
+              if [ "$got" = "$expect" ]; then
+                  echo "PASS  $desc  ($got)"
+              else
+                  echo "FAIL  $desc  expected $expect, got $got"
+                  echo "$out" | head -3
+                  fail=1
+              fi
+          }
+
+          check "-x 256 is allowed"   accept -x 256
+          check "-x 257 is rejected"  reject -x 257
+          check "-k 256K is allowed"  accept -k 256K
+          check "-k 200K is rejected" reject -k 200K
+          check "-k 512K is allowed"  accept -k 512K
+
+          echo "--- changed defaults (via RPC) ---"
+          "$A" --enable-rpc --rpc-listen-port=6899 --rpc-secret=t --quiet \
+               --dir=/tmp > /tmp/rpc.log 2>&1 &
+          rpc=$!
+          for i in $(seq 1 20); do
+              curl -sf -o /dev/null http://127.0.0.1:6899/jsonrpc -X POST \
+                   -d '{"jsonrpc":"2.0","id":"1","method":"aria2.getVersion","params":["token:t"]}' && break
+              sleep 0.5
+          done
+          opts=$(curl -s http://127.0.0.1:6899/jsonrpc -X POST \
+                 -d '{"jsonrpc":"2.0","id":"2","method":"aria2.getGlobalOption","params":["token:t"]}')
+          curl -s http://127.0.0.1:6899/jsonrpc -X POST \
+               -d '{"jsonrpc":"2.0","id":"3","method":"aria2.shutdown","params":["token:t"]}' >/dev/null
+          wait $rpc 2>/dev/null || true
+
+          expect() {  # expect <key> <value>
+              if echo "$opts" | grep -qF "\"$1\":\"$2\""; then
+                  echo "PASS  $1 = $2"
+              else
+                  echo "FAIL  $1 should be $2"
+                  echo "$opts" | tr ',' '\n' | grep "$1" || true
+                  fail=1
+              fi
+          }
+          expect min-split-size 1048576        # 1M   (stock 20M)
+          expect piece-length 262144           # 256K (stock 1M)
+          expect disk-cache 67108864           # 64M  (stock 16M)
+          expect max-concurrent-downloads 10   #      (stock 5)
+          expect connect-timeout 15            #      (stock 60)
+          expect max-tries 10                  #      (stock 5)
+
+          echo "--- runtime raise past the stock ceiling ---"
+          "$A" --enable-rpc --rpc-listen-port=6898 --rpc-secret=t --quiet --dir=/tmp \
+               > /tmp/rpc2.log 2>&1 &
+          rpc2=$!
+          for i in $(seq 1 20); do
+              curl -sf -o /dev/null http://127.0.0.1:6898/jsonrpc -X POST \
+                   -d '{"jsonrpc":"2.0","id":"1","method":"aria2.getVersion","params":["token:t"]}' && break
+              sleep 0.5
+          done
+          res=$(curl -s http://127.0.0.1:6898/jsonrpc -X POST -d \
+                '{"jsonrpc":"2.0","id":"2","method":"aria2.changeGlobalOption","params":["token:t",{"max-connection-per-server":"200"}]}')
+          curl -s http://127.0.0.1:6898/jsonrpc -X POST \
+               -d '{"jsonrpc":"2.0","id":"3","method":"aria2.shutdown","params":["token:t"]}' >/dev/null
+          wait $rpc2 2>/dev/null || true
+          if echo "$res" | grep -q '"result":"OK"'; then
+              echo "PASS  -x 200 accepted at runtime"
+          else
+              echo "FAIL  -x 200 rejected: $res"
+              fail=1
+          fi
+
+          exit $fail
+
+  # The real thing: cross-compile the arm64 engine with all static dependencies.
+  engine:
+    name: engine (arm64-v8a)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential python3 curl file unzip
+
+      - name: Cache NDK
+        id: ndk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/android-ndk-${{ env.NDK_VERSION }}
+          key: ndk-${{ env.NDK_VERSION }}-${{ runner.os }}
+
+      - name: Install NDK ${{ env.NDK_VERSION }}
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o /tmp/ndk.zip \
+            https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip
+          unzip -q /tmp/ndk.zip -d "$HOME"
+          ls "$HOME/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt"
+
+      - name: Fetch sources
+        run: ./fetch-sources.sh
+
+      - name: Cache static dependencies
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: build/arm64
+          key: deps-${{ runner.os }}-r27d-zlib1.3.1-openssl3.5.2-cares1.34.5
+
+      - name: Build dependencies
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: ./build-deps.sh
+
+      - name: Build engine
+        run: ./build-aria2.sh
+
+      - name: Verify the binary
+        run: |
+          set -u
+          BIN=dist/aria2c
+          . ./env.sh >/dev/null 2>&1 || true
+
+          READELF="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          [ -x "$READELF" ] || READELF=$(command -v llvm-readelf || command -v readelf)
+          [ -x "$READELF" ] || { echo "FAIL: no readelf available"; exit 1; }
+
+          file "$BIN"
+          file "$BIN" | grep -q "ELF 64-bit LSB.*ARM aarch64" || { echo "FAIL: not aarch64"; exit 1; }
+          echo "PASS  aarch64 ELF64"
+
+          needed=$($READELF -d "$BIN" | grep NEEDED | grep -o '\[.*\]' | tr -d '[]')
+          echo "NEEDED:"; echo "$needed" | sed 's/^/  /'
+          [ -n "$needed" ] || { echo "FAIL: no dynamic dependencies found"; exit 1; }
+
+          for lib in $needed; do
+              case "$lib" in
+                  libc.so|libm.so|libdl.so) ;;
+                  *) echo "FAIL: unexpected shared dependency $lib"; exit 1 ;;
+              esac
+          done
+          echo "$needed" | grep -qx "libc.so" || { echo "FAIL: libc.so missing"; exit 1; }
+          echo "PASS  only system libraries are dynamically linked"
+
+          if $READELF -d "$BIN" | grep -q libc++_shared; then
+              echo "FAIL: libc++ should be static"; exit 1
+          fi
+          echo "PASS  libc++ is static"
+
+          size=$(stat -c%s "$BIN")
+          echo "size: $((size/1024/1024)) MB"
+          [ "$size" -gt 3000000 ] && [ "$size" -lt 20000000 ] || { echo "FAIL: implausible size"; exit 1; }
+          echo "PASS  size within expected range"
+
+      - name: Upload engine
+        uses: actions/upload-artifact@v4
+        with:
+          name: aria2c-arm64
+          path: dist/aria2c
+          if-no-files-found: error

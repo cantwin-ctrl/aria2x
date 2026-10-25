@@ -16,8 +16,9 @@ export RANLIB="$TC/bin/llvm-ranlib"
 export STRIP="$TC/bin/llvm-strip"
 export NM="$TC/bin/llvm-nm"
 
-ROOT="$HOME/rev/aria2-android"
-export PREFIX="$ROOT/build/arm64"
+# ROOT is exported by the calling script; fall back to the repo this file lives in
+ROOT="${ROOT:-$(cd "$(dirname "$0")" 2>/dev/null && pwd || pwd)}"
+export PREFIX="${PREFIX:-$ROOT/build/arm64}"
 export SRC="$ROOT/src"
 export DIST="$ROOT/dist"
 

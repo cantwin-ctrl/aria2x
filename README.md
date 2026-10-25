@@ -1,5 +1,7 @@
 # aria2x
 
+[![build](https://github.com/cantwin-ctrl/aria2x/actions/workflows/build.yml/badge.svg)](https://github.com/cantwin-ctrl/aria2x/actions/workflows/build.yml)
+
 An Android download manager built on **aria2c compiled from source**, with the
 upstream limits that throttle modern connections removed — plus a small native
 front-end that speaks to it over JSON-RPC.
@@ -149,6 +151,14 @@ The binary is linked against Android's `libc`/`libm`/`libdl` but keeps OpenSSL,
 c-ares and zlib inside itself, so nothing has to be installed alongside it.
 
 ## Verified
+
+CI (`.github/workflows/build.yml`) on every push:
+
+- applies the patch to a pristine upstream tarball and builds aria2 natively
+- asserts `-x 256` and `-k 256K` are accepted while `-x 257` and `-k 200K` are
+  rejected, and that all six changed defaults are in effect at runtime
+- cross-compiles the arm64 engine and checks the result is aarch64, statically
+  links libc++, and depends only on `libc`/`libm`/`libdl`
 
 On an ARM64 device (Android 13):
 
